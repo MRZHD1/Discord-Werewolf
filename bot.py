@@ -154,9 +154,11 @@ async def on_message(message):
     if message.author.id in [client.user.id] + IGNORE_LIST or not member:
         if not (message.author.id in ADMINS or message.author.id == OWNER_ID):
             return
-    if await rate_limit(message):
-        print("Rate limited")
-        return
+    # Rate limiting broken
+    # TODO: fix rate limiting
+    # if message.content.strip().startswith(BOT_PREFIX) and await rate_limit(message):
+    #     print("Rate limited")
+    #     return
     if not message.guild:
         await log(0, 'pm from ' + message.author.name + ' (' + str(message.author.id) + '): ' + message.content)
         if session[0] and message.author.id in session[1]:
@@ -3301,10 +3303,11 @@ async def end_game(reason, winners=None):
           session[4][1].seconds // 60, session[4][1].seconds % 60, (session[4][0].seconds + session[4][1].seconds) // 60,
           (session[4][0].seconds + session[4][1].seconds) % 60, reason)
     if winners or session[6] == 'crazy':
-        winners = []
         for player in session[1]:
             # ALTERNATE WIN CONDITIONS
             if session[1][player][0] and get_role(player, 'role') == 'crazed shaman':
+                if not winners:
+                    winners = []
                 winners.append(player)
         winners = sort_players(set(winners)) # set ensures winners are unique
         if len(winners) == 0:
