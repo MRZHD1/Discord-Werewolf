@@ -365,8 +365,11 @@ async def cmd_leave(message, parameters):
                                                                  QUIT_GAME_STASIS, BOT_PREFIX))
             def check(m):
                 c = m.content.lower()
-                return c in ['yes', 'y', 'no', 'n']
-            response = await client.wait_for_message(author=message.author, channel=message.channel, timeout=5, check=check)
+                if (c in ['yes', 'y', 'no', 'n']) and m.author.id == message.author.id:
+                    return True
+                else:
+                    return False
+            response = await client.wait_for(timeout=5, check=check)
             await client.delete_message(msg)
             if not response or response.content.lower() not in ['yes', 'y']:
                 return
