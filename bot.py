@@ -15,7 +15,8 @@ from collections import OrderedDict
 from itertools import chain
 
 ################## START INIT #####################
-client = discord.Client()
+intents = discord.Intents.all()
+client = discord.Client(intents=intents)
 # [playing?, {players dict}, day?, [night start, day start], [night elapsed, day elapsed], first join, gamemode, {original roles amount}]
 session = [False, OrderedDict(), False, [0, 0], [timedelta(0), timedelta(0)], 0, '', {}]
 PLAYERS_ROLE = None
@@ -84,6 +85,8 @@ def cmd(name, perms, description, *aliases):
 
 ################### END INIT ######################
 
+async def send_message(channel, post):
+    await channel.send(post)
 @client.event
 async def on_ready():
     global starttime
@@ -98,7 +101,7 @@ async def on_ready():
         return
     await log(1, 'on_ready triggered!')
     # [playing : True | False, players : {player id : [alive, role, action, template, other]}, day?, [datetime night, datetime day], [elapsed night, elapsed day], first join time, gamemode]
-    for role in client.get_server(WEREWOLF_SERVER).role_hierarchy:
+    for role in client.get_guild(WEREWOLF_SERVER).roles:
         if role.name == PLAYERS_ROLE_NAME:
             global PLAYERS_ROLE
             PLAYERS_ROLE = role
@@ -124,20 +127,20 @@ async def on_ready():
         await client.change_presence(status=discord.Status.online, game=discord.Game(name=PLAYING_MESSAGE))
     sync_players = False
     sync_lobby = False
-    for member in client.get_server(WEREWOLF_SERVER).members:
+    for member in client.get_guild(WEREWOLF_SERVER).members:
         if PLAYERS_ROLE in member.roles:
             if not sync_players:
                 await send_lobby("{}, the bot has restarted, so the game has been cancelled. Type `{}join` to start a new game.".format(PLAYERS_ROLE.mention, BOT_PREFIX))
                 sync_players = True
-            await client.remove_roles(member, PLAYERS_ROLE)
-    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_server(WEREWOLF_SERVER).default_role)
+            await member.remove_roles(PLAYERS_ROLE)
+    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_guild(WEREWOLF_SERVER).default_role)
     if not perms.send_messages:
         perms.send_messages = True
-        await client.edit_channel_permissions(client.get_channel(GAME_CHANNEL), client.get_server(WEREWOLF_SERVER).default_role, perms)
+        client.get_channel(GAME_CHANNEL).set_permissions(client.get_guild(WEREWOLF_SERVER).default_role, overwrite=perms)
         sync_lobby = True
     if sync_players or sync_lobby:
         await log(2, "SYNCED UPON BOT RESTART")
-    starttime = datetime.now()
+    await send_lobby("im running")
 
 @client.event
 async def on_resume():
@@ -146,31 +149,31 @@ async def on_resume():
 
 @client.event
 async def on_message(message):
-    if not starttime:
-        return
-    if message.author.id in [client.user.id] + IGNORE_LIST or not client.get_server(WEREWOLF_SERVER).get_member(message.author.id):
+    guild = client.get_guild(WEREWOLF_SERVER)
+    member = guild.get_member(message.author.id)
+    if message.author.id in [client.user.id] + IGNORE_LIST or not member:
         if not (message.author.id in ADMINS or message.author.id == OWNER_ID):
             return
     if await rate_limit(message):
+        print("Rate limited")
         return
-
-    if message.channel.is_private:
-        await log(0, 'pm from ' + message.author.name + ' (' + message.author.id + '): ' + message.content)
+    if not message.guild:
+        await log(0, 'pm from ' + message.author.name + ' (' + str(message.author.id) + '): ' + message.content)
         if session[0] and message.author.id in session[1]:
             if session[1][message.author.id][1] in WOLFCHAT_ROLES and session[1][message.author.id][0]:
                 if not message.content.strip().startswith(BOT_PREFIX):
                     await wolfchat(message)
-
     if message.content.strip().startswith(BOT_PREFIX):
         # command
         command = message.content.strip()[len(BOT_PREFIX):].lower().split(' ')[0]
         parameters = ' '.join(message.content.strip().lower().split(' ')[1:])
-        if has_privileges(1, message) or message.channel.id == GAME_CHANNEL or message.channel.is_private:
+        if has_privileges(1, message) or message.channel.id == GAME_CHANNEL or not message.guild:
             await parse_command(command, message, parameters)
-    elif message.channel.is_private:
+    elif not message.guild:
         command = message.content.strip().lower().split(' ')[0]
         parameters = ' '.join(message.content.strip().lower().split(' ')[1:])
         await parse_command(command, message, parameters)
+    client.process_command(message)
 
 @client.event
 async def on_member_remove(member):
@@ -198,7 +201,7 @@ async def on_member_remove(member):
             await send_lobby(leave_msg)
             await log(2, "{} ({}) was FLEAVED for leaving the server OUT OF GAME".format(member_name, member_id))
         if len(session[1]) == 0:
-            await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.online)
+            await client.change_presence(status=discord.Status.online)
 
 ############# COMMANDS #############
 @cmd('shutdown', [2, 2], "```\n{0}shutdown takes no arguments\n\nShuts down the bot. Owner-only.```")
@@ -253,7 +256,7 @@ async def cmd_exec(message, parameters):
     output = str(redirected_output.getvalue())
     if output == '':
         output = ":thumbsup:"
-    await client.send_message(message.channel, output)
+    await send_message(message.channel, output)
 
 @cmd('async', [2, 2], "```\n{0}async <code>\n\nExecutes <code> as a coroutine.```")
 async def cmd_async(message, parameters, recursion=0):
@@ -292,7 +295,7 @@ async def cmd_async(message, parameters, recursion=0):
             result = traceback.format_exc()
     finally:
         sys.stdout = old_stdout
-    await client.send_message(message.channel, "```py\n{}\n```".format(result))
+    await send_message(message.channel, "```py\n{}\n```".format(result))
 
 @cmd('help', [0, 0], "```\n{0}help <command>\n\nReturns hopefully helpful information on <command>. Try {0}list for a listing of commands.```")
 async def cmd_help(message, parameters):
@@ -307,7 +310,7 @@ async def cmd_help(message, parameters):
 async def cmd_list(message, parameters):
     cmdlist = []
     for key in commands:
-        if message.channel.is_private:
+        if not message.guild:
             if has_privileges(commands[key][1][1], message):
                 cmdlist.append(key)
         else:
@@ -337,16 +340,16 @@ async def cmd_join(message, parameters):
             wait_timer = datetime.now() + timedelta(seconds=WAIT_AFTER_JOIN)
             client.loop.create_task(game_start_timeout_loop())
             client.loop.create_task(wait_timer_loop())
-            await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.idle)
+            await client.change_presence(status=discord.Status.idle)
             await send_lobby(random.choice(lang['gamestart']).format(
                                             message.author.name, p=BOT_PREFIX))
         else:
-            await client.send_message(message.channel, "**{}** joined the game and raised the number of players to **{}**.".format(
+            await send_message(message.channel, "**{}** joined the game and raised the number of players to **{}**.".format(
                                                         message.author.name, len(session[1])))
         if parameters:
             await cmd_vote(message, parameters)
         #                            alive, role, action, [templates], [other]
-        await client.add_roles(client.get_server(WEREWOLF_SERVER).get_member(message.author.id), PLAYERS_ROLE)
+        await message.author.add_roles(PLAYERS_ROLE)
         wait_timer = datetime.now() + timedelta(seconds=WAIT_AFTER_JOIN)
         client.loop.create_task(player_idle(message))
 
@@ -354,7 +357,7 @@ async def cmd_join(message, parameters):
 async def cmd_leave(message, parameters):
     if session[0] and message.author.id in session[1] and session[1][message.author.id][0]:
         if parameters != '-force':
-            msg = await client.send_message(message.channel, "Are you sure you want to quit during game? Doing "
+            msg = await send_message(message.channel, "Are you sure you want to quit during game? Doing "
                                                              "so will result in {} games of stasis. You may bypass "
                                                              "this confirmation by using `{}leave -force`.".format(
                                                                  QUIT_GAME_STASIS, BOT_PREFIX))
@@ -389,7 +392,7 @@ async def cmd_leave(message, parameters):
             await player_deaths({message.author.id : ('leave', "bot")})
             await send_lobby(random.choice(lang['leavelobby']).format(message.author.name, len(session[1])))
             if len(session[1]) == 0:
-                await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.online)
+                await client.change_presence(status=discord.Status.online)
         else:
             await reply(message, random.choice(lang['notplayingleave']))
 
@@ -429,14 +432,15 @@ async def cmd_fjoin(message, parameters):
         return
     join_msg = ""
     for member in sort_players(join_list):
+        member = int(member)
         session[1][member] = [True, '', '', [], []]
         join_msg += "**" + get_name(member) + "** was forced to join the game.\n"
-        if client.get_server(WEREWOLF_SERVER).get_member(member):
-            await client.add_roles(client.get_server(WEREWOLF_SERVER).get_member(member), PLAYERS_ROLE)
+        if client.get_guild(WEREWOLF_SERVER).get_member(member):
+            await client.get_guild(WEREWOLF_SERVER).get_member(member).add_roles(PLAYERS_ROLE)
     join_msg += "New player count: **{}**".format(len(session[1]))
     if len(session[1]) > 0:
-        await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.idle)
-    await client.send_message(message.channel, join_msg)
+        await client.change_presence(status=discord.Status.idle)
+    await send_message(message.channel, join_msg)
     await log(2, "{0} ({1}) used FJOIN {2}".format(message.author.name, message.author.id, parameters))
 
 @cmd('fleave', [1, 1], "```\n{0}fleave <mentions of users | all>\n\nForces each <mention> to leave the game. If the parameter is all, removes all players from the game.```")
@@ -482,7 +486,7 @@ async def cmd_fleave(message, parameters):
     if session[0] and win_condition() == None:
         await check_traitor()
     if len(session[1]) == 0:
-        await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.online)
+        await client.change_presence(status=discord.Status.online)
 
 @cmd('refresh', [1, 1], "```\n{0}refresh [<language file>]\n\nRefreshes the current language's language file from GitHub. Admin only.```")
 async def cmd_refresh(message, parameters):
@@ -551,9 +555,9 @@ async def cmd_fstop(message, parameters):
             return
         msg += ". Here is some debugging info:\n```py\n{0}\n```".format(str(session))
         session[0] = False
-        perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_server(WEREWOLF_SERVER).default_role)
+        perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_guild(WEREWOLF_SERVER).default_role)
         perms.send_messages = True
-        await client.edit_channel_permissions(client.get_channel(GAME_CHANNEL), client.get_server(WEREWOLF_SERVER).default_role, perms)
+        await client.get_channel(GAME_CHANNEL).set_permissions(client.get_guild(WEREWOLF_SERVER).default_role, overwrite=perms)
         session[3] = [datetime.now(), datetime.now()]
         session[4] = [timedelta(0), timedelta(0)]
         session[6] = ''
@@ -576,19 +580,19 @@ async def cmd_fstop(message, parameters):
 
 @cmd('sync', [1, 1], "```\n{0}sync takes no arguments\n\nSynchronizes all player roles and channel permissions with session.```")
 async def cmd_sync(message, parameters):
-    for member in client.get_server(WEREWOLF_SERVER).members:
+    for member in client.get_guild(WEREWOLF_SERVER).members:
         if member.id in session[1] and session[1][member.id][0]:
             if not PLAYERS_ROLE in member.roles:
-                await client.add_roles(member, PLAYERS_ROLE)
+                await member.add_roles(PLAYERS_ROLE)
         else:
             if PLAYERS_ROLE in member.roles:
-                await client.remove_roles(member, PLAYERS_ROLE)
-    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_server(WEREWOLF_SERVER).default_role)
+                await member.remove_roles(PLAYERS_ROLE)
+    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_guild(WEREWOLF_SERVER).default_role)
     if session[0]:
         perms.send_messages = False
     else:
         perms.send_messages = True
-    await client.edit_channel_permissions(client.get_channel(GAME_CHANNEL), client.get_server(WEREWOLF_SERVER).default_role, perms)
+    await client.get_channel(GAME_CHANNEL).set_permissions(client.get_guild(WEREWOLF_SERVER).default_role, overwrite=perms)
     await log(2, "{0} ({1}) SYNC".format(message.author.name, message.author.id))
     await reply(message, "Sync successful.")
 
@@ -596,10 +600,10 @@ async def cmd_sync(message, parameters):
 async def cmd_op(message, parameters):
     await log(2, "{0} ({1}) OP {2}".format(message.author.name, message.author.id, parameters))
     if parameters == "":
-        await client.add_roles(client.get_server(WEREWOLF_SERVER).get_member(message.author.id), ADMINS_ROLE)
+        await client.add_roles(client.get_guild(WEREWOLF_SERVER).get_member(message.author.id), ADMINS_ROLE)
         await reply(message, ":thumbsup:")
     else:
-        member = client.get_server(WEREWOLF_SERVER).get_member(parameters.strip("<!@>"))
+        member = client.get_guild(WEREWOLF_SERVER).get_member(parameters.strip("<!@>"))
         if member:
             if member.id in ADMINS:
                 await client.add_roles(member, ADMINS_ROLE)
@@ -609,10 +613,10 @@ async def cmd_op(message, parameters):
 async def cmd_deop(message, parameters):
     await log(2, "{0} ({1}) DEOP {2}".format(message.author.name, message.author.id, parameters))
     if parameters == "":
-        await client.remove_roles(client.get_server(WEREWOLF_SERVER).get_member(message.author.id), ADMINS_ROLE)
+        await client.remove_roles(client.get_guild(WEREWOLF_SERVER).get_member(message.author.id), ADMINS_ROLE)
         await reply(message, ":thumbsup:")
     else:
-        member = client.get_server(WEREWOLF_SERVER).get_member(parameters.strip("<!@>"))
+        member = client.get_guild(WEREWOLF_SERVER).get_member(parameters.strip("<!@>"))
         if member:
             if member.id in ADMINS:
                 await client.remove_roles(member, ADMINS_ROLE)
@@ -633,7 +637,7 @@ async def cmd_role(message, parameters):
         await reply(message, roles_message)
         return
     elif parameters == "" and session[0]:
-        msg = "**{}** players playing **{}** gamemode:```\n".format(len(session[1]),
+        msg = "**{}** players playing **{}** gamemode:```\n".format(str(len(session[1])),
         'roles' if session[6].startswith('roles') else session[6])
         if session[6] in ('random',):
             msg += "!role is disabled for the {} gamemode.\n```".format(session[6])
@@ -737,14 +741,15 @@ async def cmd_role(message, parameters):
             " and " + str(gamemodes[gamemode]['max_players']) + ".")
 
 async def _send_role_info(player, sendrole=True):
+    player = int(player)
     if session[0] and player in session[1]:
-        member = client.get_server(WEREWOLF_SERVER).get_member(player)
+        member = client.get_guild(WEREWOLF_SERVER).get_member(player)
         if member and session[1][player][0]:
             role = get_role(player, 'role') if get_role(player, 'role') not in ['amnesiac', 'vengeful ghost', 'time lord'] else "villager"
             templates = get_role(player, 'templates')
             try:
                 if sendrole:
-                    await client.send_message(member, "Your role is **" + role + "**. " + roles[role][2] + '\n')
+                    await send_message(member, "Your role is **" + role + "**. " + roles[role][2] + '\n')
                 msg = []
                 living_players = [x for x in session[1] if session[1][x][0]]
                 living_players_string = ['{} ({})'.format(get_name(x), x) for x in living_players]
@@ -802,7 +807,7 @@ async def _send_role_info(player, sendrole=True):
                         else:
                             session[1][player][1] = 'jester'
                             session[1][player][4].append('executioner')
-                            await client.send_message(member, 'There are no available targets. You have now become a **jester**.\nYour role is **jester**. ' + roles['jester'][2] + '\n')
+                            await send_message(member, 'There are no available targets. You have now become a **jester**.\nYour role is **jester**. ' + roles['jester'][2] + '\n')
                 if role in ['shaman', 'wolf shaman']:
                     totem = ''
                     if session[1][player][2] in totems:
@@ -827,21 +832,21 @@ async def _send_role_info(player, sendrole=True):
                         if get_role(player, 'actualteam') == 'wolf' and session[1][player][0]:
                             wolfcount += 1
                     if "silence_totem2" in session[1][player][4]:
-                        await client.send_message(member, "You are silenced and unable to sense anything of significance.")
+                        await send_message(member, "You are silenced and unable to sense anything of significance.")
                     else:
-                        await client.send_message(member, "You sense that there are **{}** wolves.".format(wolfcount))
+                        await send_message(member, "You sense that there are **{}** wolves.".format(wolfcount))
                 if role == 'wolf mystic':
                     vilcount = 0
                     for player in session[1]:
                         if ((get_role(player, 'actualteam') == 'village' and get_role(player, 'role') != 'villager') or get_role(player, 'role') in ['fool', 'monster', 'succubus', 'piper', 'demoniac', 'serial killer']) and session[1][player][0]:
                             vilcount += 1
                     if "silence_totem2" in session[1][player][4]:
-                        await client.send_message(member, "You are silenced and unable to sense anything of significance.")
+                        await send_message(member, "You are silenced and unable to sense anything of significance.")
                     else:
-                        await client.send_message(member, "You sense that there are **{}** villagers.".format(vilcount))
+                        await send_message(member, "You sense that there are **{}** villagers.".format(vilcount))
                 #turncoat being told when they can turn
                 if role == 'turncoat' and 'sided2' not in session[1][player][4]:
-                    await client.send_message(member, "You can switch sides tonight.")
+                    await send_message(member, "You can switch sides tonight.")
                 if 'gunner' in templates and (sendrole or session[1][player][4].count('bullet') > 0 or 'gunnotify' in session[1][player][4]):
                     msg.append("You have a gun and **{}** bullet{}. Use the command "
                                "`{}role gunner` for more information.".format(
@@ -872,7 +877,7 @@ async def _send_role_info(player, sendrole=True):
                 if role == 'minion' and (str(session[4][1]) == "0:00:00" or sendrole):
                     msg.append("Living players: ```basic\n" + '\n'.join(living_players_string) + '\n```')
                 if msg:
-                    await client.send_message(member, '\n'.join(msg))
+                    await send_message(member, '\n'.join(msg))
             except discord.Forbidden:
                 await send_lobby(member.mention + ", you cannot play the game if you block me")
         elif member and get_role(player, 'role') == 'vengeful ghost' and [x for x in session[1][player][4] if x.startswith("vengeance:")]:
@@ -880,10 +885,10 @@ async def _send_role_info(player, sendrole=True):
                 against = 'wolf'
                 if [x for x in session[1][player][4] if x.startswith("vengeance:")]:
                     against = [x.split(':')[1] for x in session[1][player][4] if x.startswith('vengeance:')].pop()
-                await client.send_message(member, "You are a **vengeful ghost**, sworn to take revenge on the {0} that you believe killed you. You must kill one of them with `kill <player>` tonight. If you do not, one of them will be selected at random.".format('wolves' if against == 'wolf' else 'villagers'))
+                await send_message(member, "You are a **vengeful ghost**, sworn to take revenge on the {0} that you believe killed you. You must kill one of them with `kill <player>` tonight. If you do not, one of them will be selected at random.".format('wolves' if against == 'wolf' else 'villagers'))
                 living_players = [x for x in session[1] if session[1][x][0] if roles[get_role(x, "role")][0] == against]
                 living_players_string = ['{} ({})'.format(get_name(x), x) for x in living_players]
-                await client.send_message(member, "Living players: ```basic\n" + '\n'.join(living_players_string if living_players_string else ' ') + '\n```')
+                await send_message(member, "Living players: ```basic\n" + '\n'.join(living_players_string if living_players_string else ' ') + '\n```')
             except discord.Forbidden:
                 pass
         
@@ -899,8 +904,8 @@ async def cmd_stats(message, parameters):
             'roles' if session[6].startswith('roles') else session[6])
         reply_msg += "\n**" + str(len(session[1])) + "** players playing: **" + str(len([x for x in session[1] if session[1][x][0]])) + "** alive, "
         reply_msg += "**" + str(len([x for x in session[1] if not session[1][x][0]])) + "** dead\n"
-        reply_msg += "```basic\nLiving players:\n" + "\n".join(get_name(x) + ' (' + x + ')' for x in session[1] if session[1][x][0]) + '\n'
-        reply_msg += "Dead players:\n" + "\n".join(get_name(x) + ' (' + x + ')' for x in session[1] if not session[1][x][0]) + '\n'
+        reply_msg += "```basic\nLiving players:\n" + "\n".join(get_name(x) + ' (' + str(x) + ')' for x in session[1] if session[1][x][0]) + '\n'
+        reply_msg += "Dead players:\n" + "\n".join(get_name(x) + ' (' + str(x) + ')' for x in session[1] if not session[1][x][0]) + '\n'
 
         if session[6] in ('random',):
             reply_msg += '\n!stats is disabled for the {} gamemode.```'.format(session[6])
@@ -1003,7 +1008,6 @@ async def cmd_stats(message, parameters):
         for template in TEMPLATES_ORDERED:
             if template in orig_roles:
                 del orig_roles[template]
-        print(role_dict)
         for role in sort_roles(list(set(roles) - set(TEMPLATES_ORDERED))):
             if role in orig_roles or role_dict[role][0]:
                 if role_dict[role][0] == role_dict[role][1]:
@@ -1021,9 +1025,9 @@ async def cmd_stats(message, parameters):
         players = ["{} ({})".format(get_name(x), x) for x in session[1]]
         num_players = len(session[1])
         if num_players == 0:
-            await client.send_message(message.channel, "There is currently no active game. Try `{}join` to start a new game!".format(BOT_PREFIX))
+            await send_message(message.channel, "There is currently no active game. Try `{}join` to start a new game!".format(BOT_PREFIX))
         else:
-            await client.send_message(message.channel, "{} players in lobby: ```\n{}\n```".format(num_players, '\n'.join(players)))
+            await send_message(message.channel, "{} players in lobby: ```\n{}\n```".format(num_players, '\n'.join(players)))
 
 @cmd('revealroles', [1, 1], "```\n{0}revealroles takes no arguments\n\nDisplays what each user's roles are and sends it in pm.```", 'rr')
 async def cmd_revealroles(message, parameters):
@@ -1035,7 +1039,7 @@ async def cmd_revealroles(message, parameters):
     if not session[1]:
         msg.append(' ')
     msg.append("```")
-    await client.send_message(message.channel, '\n'.join(msg))
+    await send_message(message.channel, '\n'.join(msg))
     await log(2, "{0} ({1}) REVEALROLES".format(message.author.name, message.author.id))
 
 @cmd('see', [2, 0], "```\n{0}see <player>\n\nIf you are a seer, uses your power to detect <player>'s role. If you are a doomsayer, dooms <player> with either sickness, lycanthropy or death.```")
@@ -1167,10 +1171,10 @@ async def cmd_bless(message, parameters):
                         player = misdirect(player, message.author.id)
                     await reply(message, "You have given a blessing to **{0}**.".format(get_name(player)))
                     session[1][player][3].append('blessed')
-                    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                     if member:
                         try:
-                            await client.send_message(member, "You suddenly feel very safe.")
+                            await send_message(member, "You suddenly feel very safe.")
                         except discord.Forbidden:
                             pass
                     await log(1, "{} ({}) BLESS {} ({})".format(get_name(message.author.id), message.author.id,
@@ -1250,7 +1254,7 @@ async def cmd_hex(message, parameters):
 
 @cmd('choose', [2, 0], "```\n{0}choose <player1> and <player2>\n\nIf you are a matchmaker, Selects two players to fall in love. You may select yourself as one of the lovers.```", 'match')
 async def cmd_choose(message, parameters):
-    if not session[0] or get_role(message.author.id, 'role') not in COMMANDS_FOR_ROLE['choose'] or not session[1][message.author.id][0] or not message.channel.is_private:
+    if not session[0] or get_role(message.author.id, 'role') not in COMMANDS_FOR_ROLE['choose'] or not session[1][message.author.id][0] or message.guild:
         return
     if parameters == "":
         await reply(message, roles[session[1][message.author.id][1]][2].format(BOT_PREFIX))
@@ -1290,16 +1294,16 @@ async def cmd_choose(message, parameters):
                 await log(1, "{} ({}) CHOOSE {} ({}) AND {} ({})".format(get_name(message.author.id), message.author.id,
                     get_name(player1), player1, get_name(player2), player2))
                 love_msg = "You are in love with **{}**. If that player dies for any reason, the pain will be too much for you to bear and you will commit suicide."
-                member1 = client.get_server(WEREWOLF_SERVER).get_member(player1)
-                member2 = client.get_server(WEREWOLF_SERVER).get_member(player2)
+                member1 = client.get_guild(WEREWOLF_SERVER).get_member(player1)
+                member2 = client.get_guild(WEREWOLF_SERVER).get_member(player2)
                 if member1:
                     try:
-                        await client.send_message(member1, love_msg.format(get_name(player2)))
+                        await send_message(member1, love_msg.format(get_name(player2)))
                     except discord.Forbidden:
                         pass
                 if member2:
                     try:
-                        await client.send_message(member2, love_msg.format(get_name(player1)))
+                        await send_message(member2, love_msg.format(get_name(player1)))
                     except discord.Forbidden:
                         pass
             else:
@@ -1438,13 +1442,13 @@ async def cmd_kill(message, parameters):
                     redirected_targets.append(misdirect(player, message.author.id, include_succubus=False, include_wolf=False, initial_players=[x for x in session[1] if x not in redirected_targets]))
                 else:
                     redirected_targets.append(player)
-            session[1][message.author.id][2] = ','.join(redirected_targets)
+            session[1][message.author.id][2] = ','.join([str(x) for x in redirected_targets])
             await reply(message, "You have voted to kill **{}**.".format('** and **'.join(
                 map(get_name, valid_targets))))
             await wolfchat("**{}** has voted to kill **{}**.".format(get_name(message.author.id), '** and **'.join(
                 map(get_name, valid_targets))))
             await log(1, "{0} ({1}) KILL {2} ({3})".format(get_name(message.author.id), message.author.id,
-            ' and '.join(map(get_name, valid_targets)), ','.join(valid_targets)))
+            ' and '.join(map(get_name, valid_targets)), ','.join([str(x) for x in valid_targets])))
         elif get_role(message.author.id, 'role') == 'vengeful ghost':
             if 'notargets' in session[1][message.author.id][4]:
                 await reply(message, "You do not have any available targets.")
@@ -1481,7 +1485,7 @@ async def cmd_vote(message, parameters):
     if session[0]:
         await cmd_lynch(message, parameters)
     else:
-        if message.channel.is_private:
+        if not message.guild:
             await reply(message, "Please use vote in channel.")
             return
         if parameters == "":
@@ -1511,12 +1515,12 @@ async def cmd_lynch(message, parameters):
     else:
         if message.author.id not in session[1]:
             return
-        if message.channel.is_private:
+        if not message.guild:
             await reply(message, "Please use lynch in channel.")
             return
         if 'illness' in session[1][message.author.id][4]:
             try:
-                await client.send_message(message.author, "You are staying home due to your illness and cannot participate in the vote.")
+                await send_message(message.author, "You are staying home due to your illness and cannot participate in the vote.")
             except discord.Forbidden:
                 pass
             return
@@ -1602,7 +1606,7 @@ async def cmd_retract(message, parameters):
         # no target
         return
     if not session[0]:
-        if message.channel.is_private:
+        if not message.guild:
             await reply(message, "Please use retract in channel.")
             return
         session[1][message.author.id][2] = ''
@@ -1611,7 +1615,7 @@ async def cmd_retract(message, parameters):
         session[1][message.author.id][4] = [x for x in session[1][message.author.id][4] if not x.startswith("vote:")]
     elif session[0] and session[1][message.author.id][0]:
         if session[2]:
-            if message.channel.is_private:
+            if not message.guild:
                 await reply(message, "Please use retract in channel.")
                 return
             session[1][message.author.id][2] = ''
@@ -1623,9 +1627,9 @@ async def cmd_retract(message, parameters):
                 # All killing roles can retract except hunter and vg
                 if session[1][message.author.id][1] not in ['hunter', 'vengeful ghost']:
                     # Sent in public channel 
-                    if not message.channel.is_private:
+                    if message.guild:
                         try:
-                            await client.send_message(message.author, "Please use retract in pm.")
+                            await send_message(message.author, "Please use retract in pm.")
                         except discord.Forbidden:
                             pass
                         return
@@ -1692,7 +1696,7 @@ async def cmd_frole(message, parameters):
         return
     player = parameters.split(' ')[0]
     role = parameters.split(' ', 1)[1]
-    temp_player = get_player(player)
+    temp_player = int(get_player(str(player)))
     if temp_player:
         if session[0]:
             if role in roles or role in ['cursed']:
@@ -1718,7 +1722,7 @@ async def cmd_frole(message, parameters):
             session[1][temp_player][1] = role
     else:
         await reply(message, "Cannot find player named **" + player + "**")
-    await log(2, "{0} ({1}) FROLE {2}".format(message.author.name, message.author.id, parameters))
+    await log(2, "{0} ({1}) FROLE {2}".format(message.author.name, str(message.author.id), parameters))
 
 @cmd('force', [1, 2], "```\n{0}force <player> <target>\n\nSets <player>'s target flag (session[1][player][2]) to <target>.```")
 async def cmd_force(message, parameters):
@@ -1737,7 +1741,7 @@ async def cmd_force(message, parameters):
 
 @cmd('session', [1, 1], "```\n{0}session takes no arguments\n\nReplies with the contents of the session variable in pm for debugging purposes. Admin only.```")
 async def cmd_session(message, parameters):
-    await client.send_message(message.author, "```py\n{}\n```".format(str(session)))
+    await send_message(message.author, "```py\n{}\n```".format(str(session)))
     await log(2, "{0} ({1}) SESSION".format(message.author.name, message.author.id))
 
 @cmd('time', [0, 0], "```\n{0}time takes no arguments\n\nChecks in-game time.```", 't')
@@ -1821,7 +1825,7 @@ async def cmd_info(message, parameters):
     msg += "To join a game, use `{0}join`. If you cannot chat in #lobby, then either a game is ongoing or you are dead.\n"
     msg += "For a list of roles, use the command `{0}roles`. For information on a particular role, use `{0}role role`. For statistics on the current game, use `{0}stats`. "
     msg += "For a list of commands, use `{0}list`. For help on a command, use `{0}help command`. To see the in-game time, use `{0}time`.\n\n"
-    msg += "Please let belungawhale know about any bugs you might find."
+    msg += "Please let omer know about any bugs you might find."
     await reply(message, msg.format(BOT_PREFIX))
 
 @cmd('notify_role', [0, 0], "```\n{0}notify_role [<true|false>]\n\nGives or take the " + WEREWOLF_NOTIFY_ROLE_NAME + " role.```")
@@ -1829,7 +1833,7 @@ async def cmd_notify_role(message, parameters):
     if not WEREWOLF_NOTIFY_ROLE:
         await reply(message, "Error: A " + WEREWOLF_NOTIFY_ROLE_NAME + " role does not exist. Please let an admin know.")
         return
-    member = client.get_server(WEREWOLF_SERVER).get_member(message.author.id)
+    member = client.get_guild(WEREWOLF_SERVER).get_member(message.author.id)
     if not member:
         await reply(message, "You are not in the server!")
     has_role = WEREWOLF_NOTIFY_ROLE in member.roles
@@ -1843,10 +1847,10 @@ async def cmd_notify_role(message, parameters):
         await reply(message, commands['notify_role'][2].format(BOT_PREFIX))
         return
     if has_role:
-        await client.add_roles(member, WEREWOLF_NOTIFY_ROLE)
+        await message.author.add_roles(WEREWOLF_NOTIFY_ROLE)
         await reply(message, "You will be notified by @" + WEREWOLF_NOTIFY_ROLE.name + ".")
     else:
-        await client.remove_roles(member, WEREWOLF_NOTIFY_ROLE)
+        await message.author.add_roles(member, WEREWOLF_NOTIFY_ROLE)
         await reply(message, "You will not be notified by @" + WEREWOLF_NOTIFY_ROLE.name + ".")
 
 @cmd('ignore', [1, 1], "```\n{0}ignore <add|remove|list> <user>\n\nAdds or removes <user> from the ignore list, or outputs the ignore list.```")
@@ -1859,13 +1863,17 @@ async def cmd_ignore(message, parameters):
     else:
         action = parameters.split(' ')[0].lower()
         target = ' '.join(parameters.split(' ')[1:])
-        member_by_id = client.get_server(WEREWOLF_SERVER).get_member(target.strip('<@!>'))
-        member_by_name = client.get_server(WEREWOLF_SERVER).get_member_named(target)
+
+        member_by_name = client.get_guild(WEREWOLF_SERVER).get_member_named(target)
         member = None
-        if member_by_id:
-            member = member_by_id
-        elif member_by_name:
+        if member_by_name:
             member = member_by_name
+        else:
+            try:
+                member_by_id = client.get_guild(WEREWOLF_SERVER).get_member(int(target.strip('<@!>')))
+                member = member_by_id
+            except ValueError:
+                pass
         if action not in ['+', 'add', '-', 'remove', 'list']:
             await reply(message, "Error: invalid flag `" + action + "`. Supported flags are add, remove, list")
             return
@@ -1890,9 +1898,9 @@ async def cmd_ignore(message, parameters):
             else:
                 msg_dict = {}
                 for ignored in IGNORE_LIST:
-                    member = client.get_server(WEREWOLF_SERVER).get_member(ignored)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(ignored)
                     msg_dict[ignored] = member.name if member else "<user not in server with id " + ignored + ">"
-                await reply(message, str(len(IGNORE_LIST)) + " ignored users:\n```\n" + '\n'.join([x + " (" + msg_dict[x] + ")" for x in msg_dict]) + "```")
+                await reply(message, str(len(IGNORE_LIST)) + " ignored users:\n```\n" + '\n'.join([str(x) + " (" + str(msg_dict[x]) + ")" for x in msg_dict]) + "```")
         else:
             await reply(message, commands['ignore'][2].format(BOT_PREFIX))
         await log(2, "{0} ({1}) IGNORE {2}".format(message.author.name, message.author.id, parameters))
@@ -1930,7 +1938,7 @@ async def cmd_notify(message, parameters):
     notify = message.author.id in notify_me
     if parameters == '':
         online = ["<@{}>".format(x) for x in notify_me if x != message.author.id and is_online(x) and x not in session[1] and (x in stasis and stasis[x] == 0 or x not in stasis)]
-        if message.channel.is_private:
+        if not message.guild:
             await reply(message, "PING! {}".format(''.join(online)), cleanmessage=False)
         elif message.author.id in stasis and stasis[message.author.id] == 0 or message.author.id not in stasis:
             if first_notify:
@@ -2017,13 +2025,13 @@ async def cmd_entrance(message, parameters):
                 else:
                     if 'misdirection_totem2' in session[1][message.author.id][4] or 'luck_totem2' in session[1][player][4]:
                         player = misdirect(player, initial_players=[x for x in session[1] if 'entranced' not in session[1][x][4] and get_role(x, 'role') != 'succubus'])
-                    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                     if 'bishop' in session[1][player][3]:
                         await reply(message, "The holiness of **{}** deters you from approaching. Your entrance is unsuccessful.".format(get_name(player)))
                         session[1][message.author.id][2] = message.author.id
                         if member:
                             try:
-                                await client.send_message(member, "You smell the strange scent of a succubus for a fleeting moment. The succubus came near you, but it left you untouched.")
+                                await send_message(member, "You smell the strange scent of a succubus for a fleeting moment. The succubus came near you, but it left you untouched.")
                             except discord.Forbidden:
                                 pass
                         await log(1, "{0} ({1}) FAILED TO ENTRANCE {2} ({3})".format(get_name(message.author.id), message.author.id, get_name(player), player))
@@ -2063,7 +2071,7 @@ async def cmd_entrance(message, parameters):
                                     session[1][player][2] = totem
                         if member:
                             try:
-                                await client.send_message(member, succubus_message.format(get_name(message.author.id)))
+                                await send_message(member, succubus_message.format(get_name(message.author.id)))
                             except discord.Forbidden:
                                 pass
                         await log(1, "{0} ({1}) ENTRANCE {2} ({3})".format(get_name(message.author.id), message.author.id, get_name(player), player))
@@ -2112,7 +2120,7 @@ async def cmd_curse(message, parameters):
 
 @cmd('charm', [2, 0], "```\n{0}charm <player1> [and <player2>]\n\nIf you are a piper, charms <player1> and <player2>. You can choose to charm only one player.```")
 async def cmd_charm(message, parameters):
-    if not session[0] or get_role(message.author.id, 'role') not in COMMANDS_FOR_ROLE['charm'] or not session[1][message.author.id][0] or not message.channel.is_private:
+    if not session[0] or get_role(message.author.id, 'role') not in COMMANDS_FOR_ROLE['charm'] or not session[1][message.author.id][0] or message.guild:
         return
     if parameters == "":
         await reply(message, roles[session[1][message.author.id][1]][2].format(BOT_PREFIX))
@@ -2164,20 +2172,20 @@ async def cmd_charm(message, parameters):
                 await reply(message, "You have charmed **{}** and **{}**.".format(*map(get_name, redirected_targets)))
                 await log(1, "{} ({}) CHARM {} ({}) AND {} ({})".format(get_name(message.author.id), message.author.id, get_name(redirected_targets[0]), redirected_targets[0], get_name(redirected_targets[1]), redirected_targets[1]))
                 for piper in [x for x in session[1] if session[1][x][0] and get_role(x, 'role') == 'piper' and x != message.author.id]:
-                    member = client.get_server(WEREWOLF_SERVER).get_member(piper)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(piper)
                     if member:
                         try:
-                            await client.send_message(member, "Another piper has charmed **{}** and **{}**!".format(*map(get_name, redirected_targets)))
+                            await send_message(member, "Another piper has charmed **{}** and **{}**!".format(*map(get_name, redirected_targets)))
                         except discord.Forbidden:
                             pass
             elif len(valid_targets) == 1:
                 await reply(message, "You have charmed **{}**.".format(*map(get_name, redirected_targets)))
                 await log(1, "{} ({}) CHARM {} ({})".format(get_name(message.author.id), message.author.id, get_name(redirected_targets[0]), redirected_targets[0]))
                 for piper in [x for x in session[1] if session[1][x][0] and get_role(x, 'role') == 'piper' and x != message.author.id]:
-                    member = client.get_server(WEREWOLF_SERVER).get_member(piper)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(piper)
                     if member:
                         try:
-                            await client.send_message(member, "Another piper has charmed **{}**!".format(*map(get_name, redirected_targets)))
+                            await send_message(member, "Another piper has charmed **{}**!".format(*map(get_name, redirected_targets)))
                         except discord.Forbidden:
                             pass
             session[1][message.author.id][4].remove('charm')
@@ -2288,10 +2296,10 @@ async def cmd_visit(message, parameters):
                         player = misdirect(player)
                     await reply(message, "You are spending the night with **{}**. Have a good time!".format(get_name(player)))
                     session[1][message.author.id][2] = player
-                    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                     if member:
                         try:
-                            await client.send_message(member, "You are spending the night with **{}**. Have a good time!".format(get_name(message.author.id)))
+                            await send_message(member, "You are spending the night with **{}**. Have a good time!".format(get_name(message.author.id)))
                         except discord.Forbidden:
                             pass
                     await log(1, "{0} ({1}) VISIT {2} ({3})".format(get_name(message.author.id), message.author.id, get_name(player), player))
@@ -2465,7 +2473,7 @@ async def cmd_fstasis(message, parameters):
         return
     params = parameters.split(' ')
     player = params[0].strip('<!@>')
-    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
     name = "user not in server with id " + player
     if member:
         name = member.display_name
@@ -2547,19 +2555,19 @@ async def cmd_shoot(message, parameters):
         return
     if ('gunner' not in get_role(message.author.id, 'templates') and 'sharpshooter' not in get_role(message.author.id, 'templates')):
         try:
-            await client.send_message(message.author, "You don't have a gun.")
+            await send_message(message.author, "You don't have a gun.")
         except discord.Forbidden:
             pass
         return
     if not session[2]:
         try:
-            await client.send_message(message.author, "You may only shoot players during the day.")
+            await send_message(message.author, "You may only shoot players during the day.")
         except discord.Forbidden:
             pass
         return
     if "silence_totem2" in session[1][message.author.id][4]:
         try:
-            await client.send_message(message.author, "You have been silenced, and are unable to use any special powers.")
+            await send_message(message.author, "You have been silenced, and are unable to use any special powers.")
         except discord.Forbidden:
             pass
         return
@@ -2651,7 +2659,7 @@ async def cmd_shoot(message, parameters):
     else:
         target = client.get_channel(GAME_CHANNEL)
     try:
-        await client.send_message(target, msg)
+        await send_message(target, msg)
     except discord.Forbidden:
         pass
 
@@ -2749,7 +2757,7 @@ async def cmd_observe(message, parameters):
                         else:
                                 msg = "sleeping all night long"
                         try:
-                            await client.send_message(message.author, "As the sun rises, you conclude that **{}** was {}, and you fly back to your house.".format(
+                            await send_message(message.author, "As the sun rises, you conclude that **{}** was {}, and you fly back to your house.".format(
                                 get_name(player), msg))
                         except discord.Forbidden:
                             pass
@@ -2924,7 +2932,7 @@ async def cmd_guard(message, parameters):
         else:
             player = get_player(parameters)
             if player:
-                if 'lasttarget:' + player in session[1][message.author.id][4]: # So hacky but whatever
+                if 'lasttarget:' + str(player) in session[1][message.author.id][4]: # So hacky but whatever
                     await reply(message, "You already guarded **{}** last night. You may not guard the same player two nights in a row.".format(get_name(player)))
                     return
                 if not session[1][player][0]:
@@ -2938,10 +2946,10 @@ async def cmd_guard(message, parameters):
                         await log(1, '{0} ({1}) GUARD SELF'.format(get_name(message.author.id), message.author.id))
                     else:
                         await reply(message, 'You have chosen to guard **{}**.'.format(get_name(player)))
-                        member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                        member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                         if member:
                             try:
-                                await client.send_message(member, 'You can sleep well tonight, for you are being protected.')
+                                await send_message(member, 'You can sleep well tonight, for you are being protected.')
                             except discord.Forbidden:
                                 pass
                         await log(1, '{0} ({1}) GUARD {2} ({3})'.format(get_name(message.author.id), message.author.id, get_name(player), player))
@@ -2957,10 +2965,10 @@ async def cmd_guard(message, parameters):
                     session[1][message.author.id][2] = player
                     session[1][player][4].append('bodyguard:{}'.format(message.author.id))
                     await reply(message, 'You have chosen to guard **{}**.'.format(get_name(player)))
-                    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                     if member:
                         try:
-                            await client.send_message(member, "You can sleep well tonight, for you are being protected.")
+                            await send_message(member, "You can sleep well tonight, for you are being protected.")
                         except discord.Forbidden:
                             pass
                     await log(1, "{0} ({1}) GUARD {2} ({3})".format(get_name(message.author.id), message.author.id, get_name(player), player))
@@ -3017,10 +3025,10 @@ def quantified_items_grammatical_list(quantified_items_dict): # Can later be exp
 
 async def send_long_post(channel, post):
     if len(post) <= MAX_MESSAGE_LEN:
-        await client.send_message(channel, post)
+        await send_message(channel, post)
         return
     else:
-        await client.send_message(channel, post[:MAX_MESSAGE_LEN])
+        await send_message(channel, post[:MAX_MESSAGE_LEN])
         await send_long_post(channel, post[MAX_MESSAGE_LEN:])
 
 async def reply(message, text, cleanmessage=True):
@@ -3031,7 +3039,7 @@ async def reply(message, text, cleanmessage=True):
 async def send_lobby(text):
     for i in range(3):
         try:
-            msg = await send_long_post(client.get_channel(GAME_CHANNEL), text)
+            msg = await send_long_post(client.get_channel(int(GAME_CHANNEL)), str(text))
             return msg
         except:
             await log(3, "Error in sending message `{}` to lobby: ```py\n{}\n```".format(
@@ -3042,10 +3050,10 @@ async def send_lobby(text):
             text, traceback.format_exc()))
 
 async def parse_command(commandname, message, parameters):
-    await log(0, 'Parsing command ' + commandname + ' with parameters `' + parameters + '` from ' + message.author.name + ' (' + message.author.id + ')')
+    await log(0, 'Parsing command ' + commandname + ' with parameters `' + parameters + '` from ' + message.author.name + ' (' + str(message.author.id) + ')')
     if commandname in commands:
         pm = 0
-        if message.channel.is_private:
+        if not message.guild:
             pm = 1
         if has_privileges(commands[commandname][1][pm], message):
             try:
@@ -3055,7 +3063,7 @@ async def parse_command(commandname, message, parameters):
                 print(session)
                 msg = '```py\n{}\n```\n**session:**```py\n{}\n```'.format(traceback.format_exc(), session)
                 await log(3, msg)
-                await client.send_message(message.channel, "An error has occurred and has been logged.")
+                await send_message(message.channel, "An error has occurred and has been logged.")
         elif has_privileges(commands[commandname][1][0], message):
             if session[0] and message.author.id in session[1] and session[1][message.author.id][0]:
                 if commandname in COMMANDS_FOR_ROLE and (get_role(message.author.id, 'role') in COMMANDS_FOR_ROLE[commandname]\
@@ -3065,27 +3073,28 @@ async def parse_command(commandname, message, parameters):
             if session[0] and message.author.id in session[1] and session[1][message.author.id][0]:
                 if commandname in COMMANDS_FOR_ROLE and get_role(message.author.id, 'role') in COMMANDS_FOR_ROLE[commandname]:
                     try:
-                        await client.send_message(message.author, "Please use command " + commandname + " in private message.")
+                        await send_message(message.author, "Please use command " + commandname + " in private message.")
                     except discord.Forbidden:
                         pass
             elif message.author.id in ADMINS:
                 await reply(message, "Please use command " + commandname + " in private message.")
         else:
-            await log(2, 'User ' + message.author.name + ' (' + message.author.id + ') tried to use command ' + commandname + ' with parameters `' + parameters + '` without permissions!')
+            await reply(message, "You don't have permission to do that!")
+            await log(2, 'User ' + message.author.name + ' (' + str(message.author.id) + ') tried to use command ' + commandname + ' with parameters `' + parameters + '` without permissions!')
 
 async def send_long_log_helper(channel, post, depth=0):
     max = MAX_MESSAGE_LEN - 50  # Some breathing room for security
     if len(post) <= max:
         if depth:
-            await client.send_message(channel, "[CONTINUED] " + "```py\n" + post[:max])
+            await send_message(channel, "[CONTINUED] " + "```py\n" + post[:max])
         else:
-            await client.send_message(channel, post)
+            await send_message(channel, post)
             return
     else:
         if depth:
-            await client.send_message(channel, "[CONTINUED] " + "```py\n" + post[:max] + "```")
+            await send_message(channel, "[CONTINUED] " + "```py\n" + post[:max] + "```")
         else:
-            await client.send_message(channel, post[:max] + "```")
+            await send_message(channel, post[:max] + "```")
         await send_long_log_helper(channel, post[max:], depth+1)
 
 async def log(loglevel, text):
@@ -3097,7 +3106,7 @@ async def log(loglevel, text):
     levelmsg = {0 : '[DEBUG] ',
                 1 : '[INFO] ',
                 2 : '**[WARNING]** ',
-                3 : '**[ERROR]** <@' + OWNER_ID + '> '
+                3 : '**[ERROR]** <@' + str(OWNER_ID) + '> '
                 }
     logmsg = levelmsg[loglevel] + str(text)
     with open(LOG_FILE, 'a', encoding='utf-8') as f:
@@ -3277,7 +3286,7 @@ async def assign_roles(gamemode):
 
 async def end_game(reason, winners=None):
     global faftergame
-    await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.online)
+    await client.change_presence(status=discord.Status.online)
     if not session[0]:
         return
     session[0] = False
@@ -3288,10 +3297,11 @@ async def end_game(reason, winners=None):
         if session[3][0]:
             session[4][0] += datetime.now() - session[3][0]
     msg = "<@{}> Game over! Night lasted **{:02d}:{:02d}**. Day lasted **{:02d}:{:02d}**. Game lasted **{:02d}:{:02d}**. \
-          \n{}\n\n".format('> <@'.join(sort_players(session[1])), session[4][0].seconds // 60, session[4][0].seconds % 60,
+          \n{}\n\n".format('> <@'.join(sort_players([str(player) for player in session[1]])), session[4][0].seconds // 60, session[4][0].seconds % 60,
           session[4][1].seconds // 60, session[4][1].seconds % 60, (session[4][0].seconds + session[4][1].seconds) // 60,
           (session[4][0].seconds + session[4][1].seconds) % 60, reason)
     if winners or session[6] == 'crazy':
+        winners = []
         for player in session[1]:
             # ALTERNATE WIN CONDITIONS
             if session[1][player][0] and get_role(player, 'role') == 'crazed shaman':
@@ -3330,9 +3340,9 @@ async def end_game(reason, winners=None):
         player_dict[player] = ('game end', "bot")
     await player_deaths(player_dict)
 
-    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_server(WEREWOLF_SERVER).default_role)
+    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_guild(WEREWOLF_SERVER).default_role)
     perms.send_messages = True
-    await client.edit_channel_permissions(client.get_channel(GAME_CHANNEL), client.get_server(WEREWOLF_SERVER).default_role, perms)
+    await client.get_channel(GAME_CHANNEL).set_permissions(client.get_guild(WEREWOLF_SERVER).default_role, overwrite=perms)
 
     if faftergame:
         # !faftergame <command> [<parameters>]
@@ -3364,6 +3374,7 @@ def win_condition():
         for o in players[plr][4]:
             if o.startswith("lover:"):
                 lvr = o.split(':')[1]
+                lvr = int(lvr)
                 if lvr in players:
                     if plr not in lovers and session[1][plr][0]:
                         lovers.append(plr)
@@ -3435,7 +3446,7 @@ def win_condition():
         lovers = []
         for n in session[1][player][4]:
             if n.startswith('lover:'):
-                lovers.append(n.split(':')[1])
+                lovers.append(int(n.split(':')[1]))
         role = get_role(player, 'role')
         if get_role(player, 'actualteam') == win_team or \
             role == 'lycan' and win_team == 'village' or \
@@ -3502,6 +3513,7 @@ def end_game_stats():
         for o in session[1][player][4]:
             if o.startswith("lover:"):
                 lover = o.split(':')[1]
+                int(lover)
                 lovers.append(tuple(sort_players([player, lover])))
     lovers = list(set(lovers))
     # create a list of unique lover pairs
@@ -3535,7 +3547,7 @@ def end_game_stats():
     return role_msg
 
 def get_name(player):
-    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+    member = client.get_guild(WEREWOLF_SERVER).get_member(int(player))
     if member:
         return str(member.display_name)
     else:
@@ -3549,9 +3561,9 @@ def get_player(string):
     users_contains = []
     nicks_contains = []
     for player in session[1]:
-        if string == player.lower() or string.strip('<@!>') == player:
+        if string == str(player) or string.strip('<@!>') == str(player):
             return player
-        member = client.get_server(WEREWOLF_SERVER).get_member(player)
+        member = client.get_guild(WEREWOLF_SERVER).get_member(player)
         if member:
             if member.name.lower().startswith(string):
                 users.append(player)
@@ -3563,7 +3575,7 @@ def get_player(string):
                 users_contains.append(player)
             if string in member.display_name.lower():
                 nicks_contains.append(player)
-        elif get_player(player).lower().startswith(string):
+        elif str(get_player(str(player))).lower().startswith(string):
             users.append(player)
     if len(users) == 1:
         return users[0]
@@ -3581,7 +3593,7 @@ def sort_players(players):
     fake = []
     real = []
     for player in players:
-        if client.get_server(WEREWOLF_SERVER).get_member(player):
+        if client.get_guild(WEREWOLF_SERVER).get_member(player):
             real.append(player)
         else:
             fake.append(player)
@@ -3779,17 +3791,17 @@ async def wolfchat(message, author=''):
     else:
         msg = str(message)
 
-    member = client.get_server(WEREWOLF_SERVER).get_member(author)
+    member = client.get_guild(WEREWOLF_SERVER).get_member(author)
     if member:
         athr = member.display_name
     else:
         athr = author
-    for wolf in [x for x in session[1] if x != author and session[1][x][0] and session[1][x][1] in WOLFCHAT_ROLES and client.get_server(WEREWOLF_SERVER).get_member(x)]:
+    for wolf in [x for x in session[1] if x != author and session[1][x][0] and session[1][x][1] in WOLFCHAT_ROLES and client.get_guild(WEREWOLF_SERVER).get_member(x)]:
         try:
             pfx = "**[Wolfchat]**"
             if athr != '':
                 pfx += " message from **{}**".format(athr)
-            await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(wolf), "{}: {}".format(pfx, msg))
+            await send_message(client.get_guild(WEREWOLF_SERVER).get_member(wolf), "{}: {}".format(pfx, msg))
         except discord.Forbidden:
             pass
 
@@ -3807,7 +3819,7 @@ async def player_idle(message):
         if msg == None and message.author.id in session[1] and session[0] and session[1][message.author.id][0]:
             await send_lobby(message.author.mention + "**, you have been idling for a while. Please say something soon or you might be declared dead.**")
             try:
-                await client.send_message(message.author, "**You have been idling in #" + client.get_channel(GAME_CHANNEL).name + " for a while. Please say something soon or you might be declared dead.**")
+                await send_message(message.author, "**You have been idling in #" + client.get_channel(GAME_CHANNEL).name + " for a while. Please say something soon or you might be declared dead.**")
             except discord.Forbidden:
                 pass
             msg = await client.wait_for_message(author=message.author, channel=client.get_channel(GAME_CHANNEL), timeout=PLAYER_TIMEOUT2, check=check)
@@ -3826,7 +3838,7 @@ async def player_idle(message):
                 await log(1, "{} ({}) IDLE OUT".format(message.author.display_name, message.author.id))
 
 def is_online(user_id):
-    member = client.get_server(WEREWOLF_SERVER).get_member(user_id)
+    member = client.get_guild(WEREWOLF_SERVER).get_member(user_id)
     if member:
         if member.status in [discord.Status.online, discord.Status.idle]:
             return True
@@ -3858,7 +3870,7 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                         await player_deaths({assassin_target : ("assassination", get_role(player, 'actualteam'))})
                     elif 'blessed' in get_role(assassin_target, 'templates'):
                         try:
-                            await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(player), "**{0}** seems to be blessed, causing your assassination attempt to fail.".format(get_name(assassin_target)))
+                            await send_message(client.get_guild(WEREWOLF_SERVER).get_member(player), "**{0}** seems to be blessed, causing your assassination attempt to fail.".format(get_name(assassin_target)))
                         except discord.Forbidden:
                             pass
                     elif "protection_totem2" in session[1][assassin_target][4]:
@@ -3868,6 +3880,7 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                     elif [x for x in session[1][assassin_target][4] if x.startswith('bodyguard:')]:
                         await send_lobby("Sensing danger, **{2}** shoves **{1}** aside to save them from **{0}**.".format(get_name(player), get_name(assassin_target), get_name([x for x in session[1][assassin_target][4] if x.startswith('bodyguard:')].pop().split(':')[1])))
                 for lover in lovers:
+                    lover = int(lover)
                     if session[1][lover][0] and kill_team != "bot" and lover not in players_dict:
                         await send_lobby("Saddened by the loss of their lover, **{0}**, a{1} **{2}**, commits suicide.".format(get_name(lover), "n" if get_role(lover, "death").lower()[0] in ['a', 'e', 'i', 'o', 'u'] else "", get_role(lover, "death")))
                         await player_deaths({lover : ("lover suicide", kill_team)})
@@ -3938,7 +3951,7 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                 
                 #clone taking the dead's role
                 for clone in [x for x in session[1] if (session[1][x][0] and get_role(x, 'role') == "clone" and "clone:{}".format(player) in session[1][x][4])]:
-                    member = client.get_server(WEREWOLF_SERVER).get_member(clone)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(clone)
                     role = get_role(player, 'role')
                     cloning = player
                     #finding final target from who the clones were cloning
@@ -3951,7 +3964,7 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                                 role == get_role(cloning, 'role')
                         if member:
                             try:
-                                await client.send_message(member, "Your target was a clone and you are now cloning their target, **{0}**.".format(get_name(cloning)))
+                                await send_message(member, "Your target was a clone and you are now cloning their target, **{0}**.".format(get_name(cloning)))
                             except discord.Forbidden:
                                 pass
                                 
@@ -3983,13 +3996,13 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                         session[1][clone][1] = role
                         if member:
                             try:
-                                await client.send_message(member, "You have cloned your target and are now a **{0}**.\nYour role is **{0}**. {1}\n".format(role, roles[role][2]))
+                                await send_message(member, "You have cloned your target and are now a **{0}**.\nYour role is **{0}**. {1}\n".format(role, roles[role][2]))
                                 if role == 'executioner':
                                     exe_target = [x for x in session[1][clone][4] if x.startswith('execute:')][0].strip('execute:')
                                     if 'win' in session[1][clone][4]:
-                                        await client.send_message(member, 'Your target was **{}**. This player was lynched, so you won.'.format(get_name(exe_target)))
+                                        await send_message(member, 'Your target was **{}**. This player was lynched, so you won.'.format(get_name(exe_target)))
                                     else:
-                                        await client.send_message(member, 'Your target for lynch is **{}**.'.format(get_name(exe_target)))
+                                        await send_message(member, 'Your target for lynch is **{}**.'.format(get_name(exe_target)))
                                 elif role == "minion":
                                     living_players_string = []
                                     for plr in [x for x in session[1] if session[1][x][0]]:
@@ -3999,7 +4012,7 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                                             role_string.append(temprole)
                                         living_players_string.append("{} ({}){}".format(get_name(plr), plr,
                                         ' ({})'.format(' '.join(role_string)) if role_string else ''))
-                                    await client.send_message(member, 'Living players: ```basic\n' + '\n'.join(living_players_string) + '\n```')
+                                    await send_message(member, 'Living players: ```basic\n' + '\n'.join(living_players_string) + '\n```')
                             except discord.Forbidden:
                                 pass
                         if role in WOLFCHAT_ROLES:
@@ -4022,18 +4035,18 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                     else:
                         for entranced in [x for x in session[1] if session[1][x][0] and 'entranced' in session[1][x][4] and x not in players_dict]:
                             session[1][entranced][4].remove('entranced')
-                            member = client.get_server(WEREWOLF_SERVER).get_member(entranced)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(entranced)
                             if member:
                                 try:
-                                    await client.send_message(member, "You are no longer entranced. **Your win conditions have reset to normal.**")
+                                    await send_message(member, "You are no longer entranced. **Your win conditions have reset to normal.**")
                                 except discord.Forbidden:
                                     pass
                 if get_role(player, 'role') == "vengeful ghost" and (kill_team != "bot" and not reason == 'gunner suicide'):
                     session[1][player][4].append("vengeance:{}".format(kill_team))
-                    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                     if member:
                         try:
-                            await client.send_message(member, "OOOooooOOOOooo! You are the **vengeful ghost**. It is now your job to exact your revenge on the **{0}** that killed you.".format('villagers' if kill_team == 'village' else 'wolves'))
+                            await send_message(member, "OOOooooOOOOooo! You are the **vengeful ghost**. It is now your job to exact your revenge on the **{0}** that killed you.".format('villagers' if kill_team == 'village' else 'wolves'))
                         except discord.Forbidden:
                             pass
                 if get_role(player, 'role') == 'piper' and not [x for x in session[1] if session[1][x][0] and get_role(x, 'role') == 'piper']:
@@ -4045,10 +4058,10 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
                             session[1][plr][1] = 'jester'
                             session[1][plr][4].append('executioner')
                             session[1][plr][4].remove([x for x in session[1][plr][4] if x.startswith('execute:')][0])
-                            member = client.get_server(WEREWOLF_SERVER).get_member(plr)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(plr)
                             if member:
                                 try:
-                                    await client.send_message(member, 'Your target has died, not via lynch. You have now become a **jester**.\nYour role is **jester**. ' + roles['jester'][2] + '\n')
+                                    await send_message(member, 'Your target has died, not via lynch. You have now become a **jester**.\nYour role is **jester**. ' + roles['jester'][2] + '\n')
                                 except discord.Forbidden:
                                     pass
                 #timelord stuff
@@ -4068,9 +4081,9 @@ async def player_deaths(players_dict): # players_dict = {dead : (reason, kill_te
         else:
             ingame = 'NOT IN GAME'
             del session[1][player]
-        member = client.get_server(WEREWOLF_SERVER).get_member(player)
+        member = client.get_guild(WEREWOLF_SERVER).get_member(player)
         if member:
-            await client.remove_roles(member, PLAYERS_ROLE)
+            await member.remove_roles(PLAYERS_ROLE)
         if session[0] and kill_team != "bot":
             if get_role(player, 'role') == 'wolf cub':
                 for p in session[1]:
@@ -4090,8 +4103,8 @@ async def check_traitor():
         if 'traitor' in other:
             # traitor already turned
             return
-    wolf_team_alive = [x for x in session[1] if session[1][x][0] and get_role(x, 'role') in [
-        'traitor'] + ACTUAL_WOLVES]
+    wolf_team_alive = [x for x in session[1] if session[1][x][0] and get_role(x, 'role') in ([
+        'traitor'] + ACTUAL_WOLVES)]
     if len(wolf_team_alive) == 0:
         # no wolves alive; don't play traitor turn message
         return
@@ -4104,23 +4117,23 @@ async def check_traitor():
             for cub in cubs:
                 session[1][cub][4].append('wolf_cub')
                 session[1][cub][1] = 'wolf'
-                member = client.get_server(WEREWOLF_SERVER).get_member(cub)
+                member = client.get_guild(WEREWOLF_SERVER).get_member(cub)
                 if member:
                     try:
-                        await client.send_message(member, "You have grown up into a wolf and vowed to take revenge for your dead parents!")
+                        await send_message(member, "You have grown up into a wolf and vowed to take revenge for your dead parents!")
                     except discord.Forbidden:
                         pass
                     await send_lobby("**The villagers listen horrified as they hear growling deepen in pitch. The wolf will do whatever it takes to avenge their parents!**")
     if len(wolf_team_no_traitors) == 0:
-        traitors = [x for x in wolf_team_alive if get_role(x, 'role') == 'traitor']
-        await log(1, ', '.join(traitors) + " turned into wolf")
+        traitors = [w for w in wolf_team_alive if get_role(w, 'role') == 'traitor']
+        await log(1, ', '.join([str(tr) for tr in traitors]) + " turned into wolf")
         for traitor in traitors:
             session[1][traitor][4].append('traitor')
             session[1][traitor][1] = 'wolf'
-            member = client.get_server(WEREWOLF_SERVER).get_member(traitor)
+            member = client.get_guild(WEREWOLF_SERVER).get_member(traitor)
             if member:
                 try:
-                    await client.send_message(member, "HOOOOOOOOOWL. You have become... a wolf!\nIt is up to you to avenge your fallen leaders!")
+                    await send_message(member, "HOOOOOOOOOWL. You have become... a wolf!\nIt is up to you to avenge your fallen leaders!")
                 except discord.Forbidden:
                     pass
         if session[6] != 'noreveal':
@@ -4135,7 +4148,7 @@ def sort_roles(role_list):
 
 async def run_game():
     global notify_previous
-    await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.dnd)
+    await client.change_presence(status=discord.Status.dnd)
     session[0] = True
     session[2] = False
     notify_previous = datetime.now() - timedelta(seconds=NOTIFY_COOLDOWN)
@@ -4204,9 +4217,9 @@ async def run_game():
     for player in session[1]:
         session[1][player][1] = ''
         session[1][player][2] = ''
-    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_server(WEREWOLF_SERVER).default_role)
+    perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_guild(WEREWOLF_SERVER).default_role)
     perms.send_messages = False
-    await client.edit_channel_permissions(client.get_channel(GAME_CHANNEL), client.get_server(WEREWOLF_SERVER).default_role, perms)
+    await client.get_channel(GAME_CHANNEL).set_permissions(client.get_guild(WEREWOLF_SERVER).default_role, overwrite=perms)
     if not get_roles(session[6], len(session[1])):
         session[6] = 'default' # Fallback if invalid number of players for gamemode or invalid gamemode somehow
 
@@ -4214,9 +4227,9 @@ async def run_game():
         stasis[stasised] -= 1
     await send_lobby("<@{}>, Welcome to Werewolf, the popular detective/social party game (a theme of Mafia). "
                               "Using the **{}** game mode with **{}** players.\nAll players check for PMs from me for instructions. "
-                              "If you did not receive a pm, please let {} know.".format('> <@'.join(sort_players(session[1])),
-                              'roles' if session[6].startswith('roles') else session[6], len(session[1]),
-                              client.get_server(WEREWOLF_SERVER).get_member(OWNER_ID).name))
+                              "If you did not receive a pm, please let {} know.".format('> <@'.join(sort_players([str(player) for player in session[1]])),
+                              'roles' if session[6].startswith('roles') else str(session[6]), str(len(session[1])),
+                              str(client.get_guild(WEREWOLF_SERVER).get_member(OWNER_ID).name)))
     for i in range(RETRY_RUN_GAME):
         try:
             if datetime.now().date() == __import__('datetime').date(2018, 4, 1):
@@ -4230,7 +4243,7 @@ async def run_game():
     else:
         msg = await send_lobby("<@{}>, role attribution failed 3 times. Cancelling game. "
                                                                           "Here is some debugging info:```py\n{}\n```".format(
-                  '> <@'.join(sort_players(session[1])), session))
+                  '> <@'.join(sort_players([str(player) for player in session[1]])), session))
         await cmd_fstop(msg, '-force')
         return
 
@@ -4242,19 +4255,19 @@ async def run_game():
                 await game_loop(session)
             break
         except:
-            await send_lobby("<@{}>, game loop broke. Attempting to resume game...".format('> <@'.join(sort_players(session[1]))))
+            await send_lobby("<@{}>, game loop broke. Attempting to resume game...".format('> <@'.join(sort_players([str(player) for player in session[1]]))))
             await log(3, "Game loop broke with error: ```py\n{}\n```".format(traceback.format_exc()))
     else:
-        msg = await send_lobby("<@{}>, game loop broke 3 times. Cancelling game.".format('> <@'.join(sort_players(session[1]))))
+        msg = await send_lobby("<@{}>, game loop broke 3 times. Cancelling game.".format('> <@'.join(sort_players([str(player) for player in session[1]]))))
         await cmd_fstop(msg, '-force')
 
 async def game_loop(ses=None):
     if ses:
         await send_lobby("<@{}>, Welcome to Werewolf, the popular detective/social party game (a theme of Mafia). "
                               "Using the **{}** game mode with **{}** players.\nAll players check for PMs from me for instructions. "
-                              "If you did not receive a pm, please let {} know.".format('> <@'.join(sort_players(session[1])),
-                              'roles' if session[6].startswith('roles') else session[6], len(session[1]),
-                              client.get_server(WEREWOLF_SERVER).get_member(OWNER_ID).name))
+                              "If you did not receive a pm, please let {} know.".format('> <@'.join(str(sort_players(session[1]))),
+                              'roles' if session[6].startswith('roles') else str(session[6]), str(len(session[1])),
+                              str(client.get_guild(WEREWOLF_SERVER).get_member(OWNER_ID).name)))
         globals()['session'] = ses
     await log(1, "Game object: ```py\n{}\n```".format(session))
     night = 1
@@ -4269,7 +4282,7 @@ async def game_loop(ses=None):
             log_msg = ['SUNSET LOG:']
             num_kills = 1
             for player in session[1]:
-                member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                 role = get_role(player, 'role')
                 if session[1][player][0]:
                     if role == 'shaman':
@@ -4391,7 +4404,7 @@ async def game_loop(ses=None):
                 for player in alive_players:
                     role = get_role(player, 'role')
                     templates = get_role(player, 'templates')
-                    member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                    member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                     if "assassin" in templates and not [x for x in session[1][player][4] if x.startswith("assassinate:")]:
                         possible_targets = [x for x in session[1] if session[1][x][0] and 'luck_totem2' not in session[1][x][4] and x != player and not (get_role(x, 'role') == 'succubus' and 'entranced' in session[1][player][4])]
                         if possible_targets:
@@ -4402,7 +4415,7 @@ async def game_loop(ses=None):
                         log_msg.append("{0} ({1}) TARGET RANDOMLY {2} ({3})".format(get_name(player), player, get_name(target), target))
                         if member:
                             try:
-                                await client.send_message(member, "Because you forgot to select a target at night, you are now targeting **{0}**.".format(get_name(target)))
+                                await send_message(member, "Because you forgot to select a target at night, you are now targeting **{0}**.".format(get_name(target)))
                             except discord.Forbidden:
                                 pass
                     if 'silence_totem2' in session[1][player][4] and role != 'matchmaker':
@@ -4425,7 +4438,7 @@ async def game_loop(ses=None):
                         if role in ['shaman', 'crazed shaman']:
                             session[1][player][2] = totem_target
                         session[1][player][4] = [x for x in session[1][player][4] if not x.startswith("lasttarget")] + ["lasttarget:{}".format(totem_target)]
-                        log_msg.append(player + '\'s ' + totem + ' given to ' + totem_target)
+                        log_msg.append(str(player) + '\'s ' + totem + ' given to ' + str(totem_target))
                         if member:
                             try:
                                 random_given = "wtf? this is a bug; pls report to admins"
@@ -4434,7 +4447,7 @@ async def game_loop(ses=None):
                                         totem.replace('_', ' '), get_name(totem_target))
                                 elif role == 'crazed shaman':
                                     random_given = "Because you forgot to give your totem out at night, your totem was randomly given to **{0}**.".format(get_name(totem_target))
-                                await client.send_message(member, random_given)
+                                await send_message(member, random_given)
                             except discord.Forbidden:
                                 pass
                     elif role == 'matchmaker' and 'match' in session[1][player][4] and str(session[4][1]) == "0:00:00":
@@ -4443,31 +4456,31 @@ async def game_loop(ses=None):
                         while True:
                             player1 = random.choice([x for x in session[1] if session[1][x][0]])
                             player2 = random.choice([x for x in session[1] if session[1][x][0] and x != player1])
-                            if not ("lover:" + player2 in session[1][player1][4] or "lover:" + player1 in session[1][player2][4]):
+                            if not ("lover:" + str(player2) in session[1][player1][4] or "lover:" + str(player1) in session[1][player2][4]):
                                 session[1][player][4].remove('match')
-                                session[1][player1][4].append('lover:' + player2)
-                                session[1][player2][4].append('lover:' + player1)
+                                session[1][player1][4].append('lover:' + str(player2))
+                                session[1][player2][4].append('lover:' + str(player1))
                                 try:
-                                    await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(player1),
+                                    await send_message(client.get_guild(WEREWOLF_SERVER).get_member(player1),
                                                         "You are in love with **{0}**. If that player dies for any reason, the pain will be too much for you to bear and you will commit suicide.".format(
                                                             get_name(player2)))
                                 except:
                                     pass
                                 try:
-                                    await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(player2),
+                                    await send_message(client.get_guild(WEREWOLF_SERVER).get_member(player2),
                                                         "You are in love with **{0}**. If that player dies for any reason, the pain will be too much for you to bear and you will commit suicide.".format(
                                                             get_name(player1)))
                                 except:
                                     pass
-                                await log(1, "{0} ({1}) MATCH {2} ({3}) AND {4} ({5})".format(get_name(player), player, get_name(player1), player1, get_name(player2), player2))
+                                await log(1, "{0} ({1}) MATCH {2} ({3}) AND {4} ({5})".format(get_name(player), str(player), get_name(player1), str(player1), get_name(player2), str(player2)))
                                 break
-                            elif [player1 + player2] not in alreadytried:
+                            elif [str(player1) + str(player2)] not in alreadytried:
                                 trycount += 1
                                 alreadytried.append([player1 + player2])
                             if trycount >= (len([x for x in session[1] if session[1][x][0]])*(len([x for x in session[1] if session[1][x][0]]) - 1)): #all possible lover sets are done
                                 break
                         try:
-                            await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(player),
+                            await send_message(client.get_guild(WEREWOLF_SERVER).get_member(player),
                                                       "Because you forgot to choose lovers at night, two lovers have been selected for you.")
                         except:
                             pass
@@ -4475,7 +4488,7 @@ async def game_loop(ses=None):
                         log_msg.append('{0} ({1}) PASS'.format(get_name(player), player))
                         if member:
                             try:
-                                await client.send_message(member, 'You have chosen not to charm anyone tonight.')
+                                await send_message(member, 'You have chosen not to charm anyone tonight.')
                             except discord.Forbidden:
                                 pass
                     elif role == 'harlot' and session[1][player][2] == '':
@@ -4483,7 +4496,7 @@ async def game_loop(ses=None):
                         log_msg.append("{0} ({1}) STAY HOME".format(get_name(player), player))
                         if member:
                             try:
-                                await client.send_message(member, "You will stay home tonight.")
+                                await send_message(member, "You will stay home tonight.")
                             except discord.Forbidden:
                                 pass
                     elif role == 'succubus' and session[1][player][2] == '':
@@ -4491,7 +4504,7 @@ async def game_loop(ses=None):
                         log_msg.append("{0} ({1}) STAY HOME".format(get_name(player), player))
                         if member:
                             try:
-                                await client.send_message(member, "You have chosen to not entrance anyone tonight.")
+                                await send_message(member, "You have chosen to not entrance anyone tonight.")
                             except discord.Forbidden:
                                 pass
                     elif role == 'hunter' and session[1][player][2] == '':
@@ -4499,7 +4512,7 @@ async def game_loop(ses=None):
                         log_msg.append("{0} ({1}) PASS".format(get_name(player), player))
                         if member:
                             try:
-                                await client.send_message(member, "You have chosen to not kill anyone tonight.")
+                                await send_message(member, "You have chosen to not kill anyone tonight.")
                             except discord.Forbidden:
                                 pass
                     elif role == 'serial killer' and session[1][player][2] == '':
@@ -4507,7 +4520,7 @@ async def game_loop(ses=None):
                         log_msg.append("{0} ({1}) PASS".format(get_name(player), player))
                         if member:
                             try:
-                                await client.send_message(member, "You have chosen to not kill anyone tonight.")
+                                await send_message(member, "You have chosen to not kill anyone tonight.")
                             except discord.Forbidden:
                                 pass
                     elif role == 'guardian angel' and session[1][player][2] in ['pass', '']:
@@ -4517,7 +4530,7 @@ async def game_loop(ses=None):
                         log_msg.append("{0} ({1}) NO GUARD".format(get_name(player), player))
                         if member and not session[1][player][2]:
                             try:
-                                await client.send_message(member, "You have chosen to not guard anyone tonight.")
+                                await send_message(member, "You have chosen to not guard anyone tonight.")
                             except discord.Forbidden:
                                 pass
                     elif role == 'vengeful ghost' and session[1][player][2] == '' and 'consecrated' not in session[1][player][4] and 'driven' not in session[1][player][4] and 'notargets' not in session[1][player][4]:
@@ -4537,7 +4550,7 @@ async def game_loop(ses=None):
                         session[1][player][4].append("clone:{}".format(target))
                         if member:
                             try:
-                                await client.send_message(member, "Because you did not choose someone to clone, you are cloning **{}**. If they die you will take their role.".format(get_name(target)))
+                                await send_message(member, "Because you did not choose someone to clone, you are cloning **{}**. If they die you will take their role.".format(get_name(target)))
                             except discord.Forbidden:
                                 pass
                         session[1][player][4].remove('clone')
@@ -4582,6 +4595,7 @@ async def game_loop(ses=None):
                 wolf_killed = sort_players(sorted_votes[:num_kills])
                 log_msg.append("WOLFKILL: " + ', '.join('{} ({})'.format(get_name(x), x) for x in wolf_killed))
                 for k in wolf_killed:
+                    k = int(k)
                     if get_role(k, 'role') == 'harlot' and session[1][k][2] != k:
                         killed_msg += "The wolves' selected victim was not at home last night, and avoided the attack.\n"
                     elif get_role(k, 'role') in ['monster', 'serial killer']:
@@ -4692,6 +4706,7 @@ async def game_loop(ses=None):
             revengekill = ""
 
             for player in sort_players(session[1]):
+                int(player)
                 prot_tots = 0
                 death_tots = 0
                 death_tots += session[1][player][4].count('death_totem')
@@ -4727,9 +4742,9 @@ async def game_loop(ses=None):
                             else:
                                 lycan_message = "You awake to a sharp pain, and realize you are being attacked by a werewolf! Your totem emits a bright flash of light, and you find yourself turning into a werewolf!"
                             try:
-                                member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                                member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                                 if member:
-                                    await client.send_message(member, lycan_message)
+                                    await send_message(member, lycan_message)
                             except discord.Forbidden:
                                 pass
                     elif "pestilence_totem2" in session[1][player][4]:
@@ -4786,10 +4801,10 @@ async def game_loop(ses=None):
                             if not 'gunner' in get_role(give_gun, 'templates'):
                                 session[1][give_gun][3].append('gunner')
                             session[1][give_gun][4].append('bullet')
-                            member = client.get_server(WEREWOLF_SERVER).get_member(give_gun)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(give_gun)
                             if member:
                                 try:
-                                    await client.send_message(member, "While searching through **{}**'s belongings, you discover a gun loaded with 1 "
+                                    await send_message(member, "While searching through **{}**'s belongings, you discover a gun loaded with 1 "
                                     "silver bullet! You may only use it during the day. If you shoot at a wolf, you will intentionally miss. If you "
                                     "shoot a villager, it is likely that they will be injured.".format(get_name(player)))
                                 except discord.Forbidden:
@@ -4905,76 +4920,76 @@ async def game_loop(ses=None):
                         session[1][potato][3] = templates
                         session[1][potato][4] = other
                         try:
-                            target_member = client.get_server(WEREWOLF_SERVER).get_member(target)
+                            target_member = client.get_guild(WEREWOLF_SERVER).get_member(target)
                             if target_member:
-                                await client.send_message(target_member, 'You are now a **hot potato**!\nYour role is **hot potato**. {}\n'.format(roles['hot potato'][2]))
-                            potato_member = client.get_server(WEREWOLF_SERVER).get_member(potato)
+                                await send_message(target_member, 'You are now a **hot potato**!\nYour role is **hot potato**. {}\n'.format(roles['hot potato'][2]))
+                            potato_member = client.get_guild(WEREWOLF_SERVER).get_member(potato)
                             if potato_member:
-                                await client.send_message(potato_member, 'You are now a **{0}**!\nYour role is **{0}**. {1}\n'.format(role, roles[role][2]))
+                                await send_message(potato_member, 'You are now a **{0}**!\nYour role is **{0}**. {1}\n'.format(role, roles[role][2]))
                         except discord.Forbidden:
                             pass
                         for player in [x for x in session[1] if session[1][x][0] and session[1][x][4]]:
                             new_other = []
-                            member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                             for element in session[1][player][4]:
                                 if element == 'lover:{}'.format(target):
                                     new_other.append('lover:{}'.format(potato))
                                     try:
                                         if member:
-                                            await client.send_message(member, 'Your lover had their identity swapped, so you are now in love with **{}**!'.format(get_name(potato)))
+                                            await send_message(member, 'Your lover had their identity swapped, so you are now in love with **{}**!'.format(get_name(potato)))
                                     except discord.Forbidden:
                                         pass
                                 elif element == 'lover:{}'.format(potato):
                                     new_other.append('lover:{}'.format(target))
                                     try:
                                         if member:
-                                            await client.send_message(member, 'Your lover had their identity swapped, so you are now in love with **{}**!'.format(get_name(target)))
+                                            await send_message(member, 'Your lover had their identity swapped, so you are now in love with **{}**!'.format(get_name(target)))
                                     except discord.Forbidden:
                                         pass
                                 else:
                                     new_other.append(element)
                             session[1][player][4] = new_other
-                        member = client.get_server(WEREWOLF_SERVER).get_member(potato)
+                        member = client.get_guild(WEREWOLF_SERVER).get_member(potato)
                         if member:
                             try:
                                 if role == 'hunter':
                                     if 'hunterbullet' in session[1][potato][4]:
-                                        await client.send_message(member, 'You have **not** shot anyone yet.')
+                                        await send_message(member, 'You have **not** shot anyone yet.')
                                     else:
-                                        await client.send_message(member, 'You have **already** shot someone this game.')                                  
+                                        await send_message(member, 'You have **already** shot someone this game.')                                  
                                 elif role == 'priest':
                                     if 'bless' in session[1][potato][4]:
-                                        await client.send_message(member, 'You have **not** blessed anyone yet.')
+                                        await send_message(member, 'You have **not** blessed anyone yet.')
                                     else:
-                                        await client.send_message(member, 'You have **already** blessed someone this game.')
+                                        await send_message(member, 'You have **already** blessed someone this game.')
                                 elif role == 'clone' and session[1][potato][4]:
                                     if [x for x in session[1][potato][4] if x.startswith('clone:')]:
-                                        await client.send_message(member, "You are cloning **{}**. If they die you will take their role.".format(get_name([x for x in session[1][potato][4] if x.startswith('clone:')][0].strip('clone:'))))
+                                        await send_message(member, "You are cloning **{}**. If they die you will take their role.".format(get_name([x for x in session[1][potato][4] if x.startswith('clone:')][0].strip('clone:'))))
                                 elif role == 'turncoat':
                                     if 'side:villagers' in session[1][potato][4]:
-                                        await client.send_message(member, 'You are currently siding with the village.')
+                                        await send_message(member, 'You are currently siding with the village.')
                                     elif 'side:wolves' in session[1][potato][4]:
-                                        await client.send_message(member, 'You are currently siding with the wolves.')
+                                        await send_message(member, 'You are currently siding with the wolves.')
                                     if 'sided2' in session[1][potato][4]:
-                                        await client.send_message(member, 'You will be able to switch sides in two nights.')
+                                        await send_message(member, 'You will be able to switch sides in two nights.')
                                     else:
-                                        await client.send_message(member, 'You will be able to switch sides during the upcoming night.')
+                                        await send_message(member, 'You will be able to switch sides during the upcoming night.')
                                 elif role == 'executioner':
                                     if [x for x in session[1][potato][4] if x.startswith('execute:')]:
                                         exe_target = [x for x in session[1][potato][4] if x.startswith('execute:')][0].strip('execute:')
                                         if 'win' in session[1][potato][4]:
-                                            await client.send_message(member, 'Your target was **{}**. This player was lynched, so you won.'.format(get_name(exe_target)))
+                                            await send_message(member, 'Your target was **{}**. This player was lynched, so you won.'.format(get_name(exe_target)))
                                         else:
-                                            await client.send_message(member, 'Your target for lynch is **{}**.'.format(get_name(exe_target)))
+                                            await send_message(member, 'Your target for lynch is **{}**.'.format(get_name(exe_target)))
                                     else:
                                         if [x for x in [y for y in session[1] if session[1][y][0]] if get_role(x, 'actualteam') == 'village']:
                                             exe_target = random.choice([x for x in [y for y in session[1] if session[1][y][0]] if get_role(x, 'actualteam') == 'village'])
                                             session[1][potato][4].append('execute:{}'.format(exe_target))
-                                            await client.send_message(member, 'Your target for lynch is **{}**.'.format(get_name(exe_target)))
+                                            await send_message(member, 'Your target for lynch is **{}**.'.format(get_name(exe_target)))
                                         else:
                                             session[1][potato][1] = 'jester'
                                             session[1][potato][4].append('executioner')
-                                            await client.send_message(member, 'There are no available targets. You have now become a **jester**.\nYour role is **jester**. {}\n'.format(roles['jester'][2]))
+                                            await send_message(member, 'There are no available targets. You have now become a **jester**.\nYour role is **jester**. {}\n'.format(roles['jester'][2]))
                                 elif role == 'minion':
                                     living_players_string = []
                                     for plr in [x for x in session[1] if session[1][x][0]]:
@@ -4984,25 +4999,25 @@ async def game_loop(ses=None):
                                             role_string.append(temprole)
                                         living_players_string.append("{} ({}){}".format(get_name(plr), plr,
                                         ' ({})'.format(' '.join(role_string)) if role_string else ''))
-                                    await client.send_message(member, 'Living players: ```basic\n' + '\n'.join(living_players_string) + '\n```')
+                                    await send_message(member, 'Living players: ```basic\n' + '\n'.join(living_players_string) + '\n```')
                             except discord.Forbidden:
                                 pass
                         for player in [potato, target]:
-                            member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                             if member:
                                 try:
                                     if 'gunner' in session[1][player][3]:
-                                        await client.send_message(member, 'You have a gun and **{}** bullet{}. Use the command `{}role gunner` for more information.'.format(session[1][player][4].count('bullet'), '' if session[1][player][4].count('bullet') == 1 else 's', BOT_PREFIX))
+                                        await send_message(member, 'You have a gun and **{}** bullet{}. Use the command `{}role gunner` for more information.'.format(session[1][player][4].count('bullet'), '' if session[1][player][4].count('bullet') == 1 else 's', BOT_PREFIX))
                                     if 'sharpshooter' in session[1][player][3]:
-                                        await client.send_message(member, 'You have a gun and **{}** bullet{}. Use the command `{}role sharpshooter` for more information.'.format(session[1][player][4].count('bullet'), '' if session[1][player][4].count('bullet') == 1 else 's', BOT_PREFIX))
+                                        await send_message(member, 'You have a gun and **{}** bullet{}. Use the command `{}role sharpshooter` for more information.'.format(session[1][player][4].count('bullet'), '' if session[1][player][4].count('bullet') == 1 else 's', BOT_PREFIX))
                                     if session[1][player][4]:
                                         if 'assassin' in session[1][player][3] and [x for x in session[1][player][4] if x.startswith('assassinate:')]:
-                                            await client.send_message(member, 'Your target is **{0}**. Use the command `{1}role assassin` for more information.'.format(get_name([x for x in session[1][player][4] if x.startswith('assassinate:')][0].strip('assassinate:')), BOT_PREFIX))
+                                            await send_message(member, 'Your target is **{0}**. Use the command `{1}role assassin` for more information.'.format(get_name([x for x in session[1][player][4] if x.startswith('assassinate:')][0].strip('assassinate:')), BOT_PREFIX))
                                         for element in session[1][player][4]:
                                             if element == 'entranced' and [x for x in session[1] if session[1][x][0] and get_role(x, 'role') == 'succubus']:
-                                                await client.send_message(member, "You have become entranced, and are now on **{}**'s team. From this point on, you must vote along with them or risk dying. You **cannot win with your own team**, but you will win should all alive players become entranced.".format(get_name(random.choice([x for x in session[1] if session[1][x][0] and get_role(x, 'role') == 'succubus']))))
+                                                await send_message(member, "You have become entranced, and are now on **{}**'s team. From this point on, you must vote along with them or risk dying. You **cannot win with your own team**, but you will win should all alive players become entranced.".format(get_name(random.choice([x for x in session[1] if session[1][x][0] and get_role(x, 'role') == 'succubus']))))
                                             elif element.startswith('lover:'):
-                                                await client.send_message(member, 'You are in love with **{}**. If that player dies for any reason, the pain will be too much for you to bear and you will commit suicide.'.format(get_name(element.strip('lover:'))))
+                                                await send_message(member, 'You are in love with **{}**. If that player dies for any reason, the pain will be too much for you to bear and you will commit suicide.'.format(get_name(element.strip('lover:'))))
                                 except discord.Forbidden:
                                     pass
                         if role in WOLFCHAT_ROLES:
@@ -5012,9 +5027,9 @@ async def game_loop(ses=None):
                                 pass
                     else:
                         try:
-                            member = client.get_server(WEREWOLF_SERVER).get_member(potato)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(potato)
                             if member:
-                                await client.send_message(member, '**{}** died this night, so you are still a **hot potato**.'.format(get_name(target)))
+                                await send_message(member, '**{}** died this night, so you are still a **hot potato**.'.format(get_name(target)))
                         except discord.Forbidden:
                             pass
 
@@ -5037,9 +5052,9 @@ async def game_loop(ses=None):
                     elif len(charmed_total) == 1:
                         piper_message += "You find out that **{}** is also charmed!".format(get_name(charmed_total[0]))
                     try:
-                        member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                        member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                         if member and piper_message:
-                            await client.send_message(member,piper_message)
+                            await send_message(member,piper_message)
                     except discord.Forbidden:
                         pass
                 fullcharmed = charmed + tocharm
@@ -5053,9 +5068,9 @@ async def game_loop(ses=None):
                     elif len(fullcharmed) == 0:
                         piper_message = "You are the only charmed villager."
                     try:
-                        member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                        member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                         if member and piper_message:
-                            await client.send_message(member,piper_message)
+                            await send_message(member,piper_message)
                     except discord.Forbidden:
                         pass
                     fullcharmed.append(player)
@@ -5110,9 +5125,9 @@ async def game_loop(ses=None):
                         for i in range(session[1][player][4].count('blinding_totem')):
                             session[1][player][4].remove('blinding_totem')
                         try:
-                            member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                            member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                             if member:
-                                await client.send_message(member, "Your totem emits a brilliant flash of light. "
+                                await send_message(member, "Your totem emits a brilliant flash of light. "
                                                                 "It seems like you cannot see anything! Perhaps "
                                                                 "you should just rest during the day...")
                         except discord.Forbidden:
@@ -5182,7 +5197,7 @@ async def game_loop(ses=None):
                                     session[1][lynched_player][1] = role
                                     session[1][lynched_player][4] = [x for x in session[1][lynched_player][4] if not x.startswith("role:")]
                                     try:
-                                        await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(lynched_player), "Your totem clears your amnesia and you now fully remember who you are!")
+                                        await send_message(client.get_guild(WEREWOLF_SERVER).get_member(lynched_player), "Your totem clears your amnesia and you now fully remember who you are!")
                                         await _send_role_info(lynched_player)
                                         if role in WOLFCHAT_ROLES:
                                             await wolfchat("{0} is now a **{1}**!".format(get_name(lynched_player), role))
@@ -5208,10 +5223,10 @@ async def game_loop(ses=None):
                                     if get_role(player, 'role') == 'executioner' and 'win' not in session[1][player][4] and [x for x in session[1][player][4] if x.startswith('execute:')]:
                                         if [x for x in session[1][player][4] if x.startswith('execute:')][0].strip('execute:') == lynched_player:
                                             session[1][player][4].append('win')
-                                            member = client.get_server(WEREWOLF_SERVER).get_member(player)
+                                            member = client.get_guild(WEREWOLF_SERVER).get_member(player)
                                             if member:
                                                 try:
-                                                    await client.send_message(member, 'Your target was **{}**. This player was lynched, so you won.'.format(get_name(lynched_player)))
+                                                    await send_message(member, 'Your target was **{}**. This player was lynched, so you won.'.format(get_name(lynched_player)))
                                                 except discord.Forbidden:
                                                     pass
                                 lynchers_team = [get_role(x, 'actualteam') for x in session[1] if session[1][x][0] and session[1][x][2] == lynched_player]
@@ -5305,7 +5320,7 @@ async def game_loop(ses=None):
                         session[1][player][4] = [x for x in session[1][player][4] if not x.startswith("role:")]
                         session[1][player][4].append('amnesiac')
                         try:
-                            await client.send_message(client.get_server(WEREWOLF_SERVER).get_member(player), "Your amnesia clears and you now remember that you are a{0} **{1}**!".format("n" if role.lower()[0] in ['a', 'e', 'i', 'o', 'u'] else "", role))
+                            await send_message(client.get_guild(WEREWOLF_SERVER).get_member(player), "Your amnesia clears and you now remember that you are a{0} **{1}**!".format("n" if role.lower()[0] in ['a', 'e', 'i', 'o', 'u'] else "", role))
                             if role in WOLFCHAT_ROLES:
                                 await wolfchat("{0} is now a **{1}**!".format(get_name(player), role))
                         except:
@@ -5332,7 +5347,7 @@ async def start_votes(player):
         await send_lobby("Not enough votes to start, resetting start votes.")
 
 async def rate_limit(message):
-    if not (message.channel.is_private or message.content.startswith(BOT_PREFIX)) or message.author.id in ADMINS or message.author.id == OWNER_ID:
+    if not (message.guild or message.content.startswith(BOT_PREFIX)) or message.author.id in ADMINS or message.author.id == OWNER_ID:
         return False
     global ratelimit_dict
     global IGNORE_LIST
@@ -5371,12 +5386,12 @@ async def game_start_timeout_loop():
         await asyncio.sleep(0.1)
     if not session[0] and len(session[1]) > 0:
         session[0] = True
-        await client.change_presence(game=client.get_server(WEREWOLF_SERVER).me.game, status=discord.Status.online)
+        await client.change_presence(status=discord.Status.online)
         await send_lobby("{}, the game has taken too long to start and has been cancelled. "
                           "If you are still here and would like to start a new game, please do `{}join` again.".format(PLAYERS_ROLE.mention, BOT_PREFIX))
-        perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_server(WEREWOLF_SERVER).default_role)
+        perms = client.get_channel(GAME_CHANNEL).overwrites_for(client.get_guild(WEREWOLF_SERVER).default_role)
         perms.send_messages = True
-        await client.edit_channel_permissions(client.get_channel(GAME_CHANNEL), client.get_server(WEREWOLF_SERVER).default_role, perms)
+        await client.get_channel(GAME_CHANNEL).set_permissions(client.get_guild(WEREWOLF_SERVER).default_role, overwrite=perms)
         player_dict = {}
         for player in list(session[1]):
             player_dict[player] = ('game cancel', "bot")
@@ -6306,25 +6321,29 @@ ACTUAL_WOLVES = ['wolf', 'werecrow', 'doomsayer', 'wolf cub', 'werekitten', 'wol
 WOLFCHAT_ROLES = ['wolf', 'werecrow', 'doomsayer', 'wolf cub', 'werekitten', 'wolf shaman', 'wolf mystic', 'traitor', 'sorcerer', 'warlock', 'hag']
 
 ########### END POST-DECLARATION STUFF #############
-client.loop.create_task(do_rate_limit_loop())
-client.loop.create_task(backup_settings_loop())
-try:
-    client.loop.run_until_complete(client.start(TOKEN))
-finally:
-    try:
+async def main():
+    async with client:
+        client.loop.create_task(do_rate_limit_loop())
+        client.loop.create_task(backup_settings_loop())
         try:
-            client.loop.run_until_complete(client.logout())
-        except:
-            pass
-        pending = asyncio.Task.all_tasks()
-        gathered = asyncio.gather(*pending)
+            client.loop.run_until_complete(await client.start(TOKEN))
+        finally:
+            try:
+                try:
+                    client.loop.run_until_complete(client.logout())
+                except:
+                    pass
+                pending = asyncio.Task.all_tasks()
+                gathered = asyncio.gather(*pending)
 
-        try:
-            gathered.cancel()
-            client.loop.run_until_complete(gathered)
-            gathered.exception()
-        except:
-            pass
-    except:
-        print("Error in cleanup:\n" + traceback.format_exc())
-    client.loop.close()
+                try:
+                    gathered.cancel()
+                    client.loop.run_until_complete(gathered)
+                    gathered.exception()
+                except:
+                    pass
+            except:
+                print("Error in cleanup:\n" + traceback.format_exc())
+            client.loop.close()
+
+asyncio.run(main())

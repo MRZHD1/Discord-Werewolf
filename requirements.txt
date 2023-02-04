@@ -1,2 +1,2 @@
 aiohttp
-git+https://github.com/Picowchew/discord.py.git
+discord.py
