@@ -602,26 +602,29 @@ async def cmd_sync(message, parameters):
 async def cmd_op(message, parameters):
     await log(2, "{0} ({1}) OP {2}".format(message.author.name, message.author.id, parameters))
     if parameters == "":
-        await client.add_roles(client.get_guild(WEREWOLF_SERVER).get_member(message.author.id), ADMINS_ROLE)
+        await client.get_guild(WEREWOLF_SERVER).get_member(message.author.id).add_roles( ADMINS_ROLE)
         await reply(message, ":thumbsup:")
     else:
         member = client.get_guild(WEREWOLF_SERVER).get_member(parameters.strip("<!@>"))
         if member:
             if member.id in ADMINS:
-                await client.add_roles(member, ADMINS_ROLE)
+                await member.add_roles(ADMINS_ROLE)
                 await reply(message, ":thumbsup:")
 
 @cmd('deop', [1, 1], "```\n{0}deop takes no arguments\n\nDeops yourself so you can play with the players ;)```")
 async def cmd_deop(message, parameters):
     await log(2, "{0} ({1}) DEOP {2}".format(message.author.name, message.author.id, parameters))
     if parameters == "":
-        await client.remove_roles(client.get_guild(WEREWOLF_SERVER).get_member(message.author.id), ADMINS_ROLE)
+        await client.get_guild(WEREWOLF_SERVER).get_member(message.author.id).remove_roles(ADMINS_ROLE)
         await reply(message, ":thumbsup:")
     else:
-        member = client.get_guild(WEREWOLF_SERVER).get_member(parameters.strip("<!@>"))
+        try:
+            member = client.get_guild(WEREWOLF_SERVER).get_member(int(parameters.strip("<!@>")))
+        except TypeError:
+            member = None
         if member:
             if member.id in ADMINS:
-                await client.remove_roles(member, ADMINS_ROLE)
+                await member.remove_roles(ADMINS_ROLE)
                 await reply(message, ":thumbsup:")
 
 @cmd('role', [0, 0], "```\n{0}role [<role | number of players | gamemode>] [<number of players>]\n\nIf a <role> is given, "
@@ -3808,6 +3811,7 @@ async def wolfchat(message, author=''):
         except discord.Forbidden:
             pass
 
+# TODO: Fix idling
 async def player_idle(message):
     while message.author.id in session[1] and not session[0]:
         await asyncio.sleep(1)
