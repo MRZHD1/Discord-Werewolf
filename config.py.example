@@ -1,3 +1,5 @@
+# All IDs (Owner id, admins, channels and such) NEED to be put in as integers, not as strings. It breaks otherwise.
+
 OWNER_ID = 'owner id (owner has all perms)'
 BOT_PREFIX = '!'
 TOKEN = 'bot token goes here'

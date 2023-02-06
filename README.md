@@ -4,7 +4,7 @@ Discord Werewolf is a bot that runs the game Werewolf (Mafia) on Discord. It is 
 ## Setting the bot up
 Install Python 3.7 or higher. The latest version of Python that works is 3.11.1, which can be installed from https://www.python.org/downloads/. If you are running on Windows, then be sure to check the box that will add Python to PATH.
 
-Clone this repository. Rename `config.py.example` to `config.py` and `settings.py.example` to `settings.py`, and fill in the fields inside config.py. To change some gameplay-related settings, edit settings.py.
+Clone this repository. Rename `config.py.example` to `config.py`, and fill in the fields inside config.py. To change some gameplay-related settings, edit settings.py.
 
 ## Dependencies
 Discord Werewolf has hard dependencies on discord.py and aiohttp. You can run `pip install -r requirements.txt` to install the required dependencies. 
